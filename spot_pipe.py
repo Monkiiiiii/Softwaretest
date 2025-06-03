@@ -25,34 +25,46 @@ air_force_blue = '#5D8AA8'
 class SPOT:
     """
     This class allows to run SPOT algorithm on univariate dataset (upper-bound)
+    这个类允许在单变量数据集上运行SPOT算法
 
     Attributes
     ----------
     proba : float
         Detection level (risk), chosen by the user
-
+        检测水平（风险值），由用户设定，proba=0.001 意味着在 1000 个正常数据点中，平均允许 1 个被误判为异常。
+        
     extreme_quantile : float
         current threshold (bound between normal and abnormal events)
-
+        当前阈值（正常和异常事件的分界线），高于此值的数据点被视为异常。随着新数据的流入，这个阈值会不断更新
+        
     data : numpy.array
         stream
-
+        数据流
+        
     init_data : numpy.array
         initial batch of observations (for the calibration/initialization step)
-
+        初始观测数据批次（用于校准/初始化步骤）
+        算法需要一段初始数据（init_data）来估计正常数据的分布
+        
     init_threshold : float
         initial threshold computed during the calibration step
-
+        在校准步骤中计算的初始阈值
+        
     peaks : numpy.array
         array of peaks (excesses above the initial threshold)
-
+        峰值数组（超过初始阈值的极值）
+        峰值（peaks）是指超过初始阈值的数据点
+        
     n : int
         number of observed values
-
+        已观测值的数量
+        
     Nt : int
         number of observed peaks
+        已观测峰值的数量
     """
 
+    #spot的构造函数
     def __init__(self, q=1e-4, estimator="MOM"):
         """
         Constructor
@@ -70,20 +82,41 @@ class SPOT:
     	SPOT object
         """
         self.proba = q
+        # 将用户指定的风险值q赋值给实例变量proba
+        
         self.extreme_quantile = None
+        # 初始化极端分位数（阈值）为None，稍后会在初始化步骤中计算
+        
         self.data = None
+        # 用于存储完整数据流的变量，初始化为None
+        
         self.init_data = None
+        # 用于存储初始化数据的变量，初始化为None
+        
         self.init_threshold = None
+        # 初始化阈值，在初始化阶段计算
+        
         self.peaks = None
+        # 用于存储超过阈值的峰值数据，初始化为None
+        
         self.n = 0
+        # 记录已观测数据点的总数，初始化为0
+        
         self.Nt = 0
+        # 记录已观测峰值的数量，初始化为0
+        
         if estimator == "MLE":
             self.estimator = self._grimshaw
+            # 如果用户选择最大似然估计法，则使用_grimshaw方法进行参数估计
         elif estimator == "MOM":
             self.estimator = self._MOM
+            # 如果用户选择矩估计法，则使用_MOM方法进行参数估计
         else:
             raise TypeError("Unsupported Estimator Type!")
+            # 如果用户输入了不支持的估计方法，抛出类型错误
 
+
+    # 打印 SPOT 对象时，会调用这个方法返回一个格式化的字符串，显示算法的当前状态和参数信息
     def __str__(self):
         s = ''
         s += 'Streaming Peaks-Over-Threshold Object\n'
@@ -95,14 +128,17 @@ class SPOT:
         else:
             s += 'Data imported : No\n'
             return s
+            # 如果数据未导入，显示提示并提前返回
 
         if self.n == 0:
             s += 'Algorithm initialized : No\n'
         else:
             s += 'Algorithm initialized : Yes\n'
             s += '\t initial threshold : %s\n' % self.init_threshold
+            # 如果算法已初始化，显示初始阈值
 
             r = self.n - self.init_data.size
+            # 计算已处理的数据流长度（总数据点减去初始化数据点）
             if r > 0:
                 s += 'Algorithm run : Yes\n'
                 s += '\t number of observations : %s (%.2f %%)\n' % (r, 100 * r / self.n)
@@ -112,6 +148,7 @@ class SPOT:
                 s += 'Algorithm run : No\n'
         return s
 
+    #fit方法负责接收初始数据并转换为内部格式
     def fit(self, init_data):
         """
         Import initial data to SPOT object
@@ -123,17 +160,20 @@ class SPOT:
         Returns:
 
         """
-
         if isinstance(init_data, list):
             self.init_data = np.array(init_data)
+            # 如果输入是列表，转换为numpy数组
         elif isinstance(init_data, np.ndarray):
             self.init_data = init_data
+            # 如果输入已是numpy数组，直接使用
         elif isinstance(init_data, pd.Series):
             self.init_data = init_data.values
+            # 如果输入是pandas Series，提取其值作为numpy数组
         else:
             print('The initial data cannot be set')
             return
 
+    # initialize方法基于这些数据计算初始阈值和极端分位数
     def initialize(self, level=0.98, verbose=True):
         """
         Run the calibration (initialization) step
@@ -146,14 +186,19 @@ class SPOT:
         """
 
         level = level - floor(level)
+        #初始阈值
 
         n_init = self.init_data.size
 
         S = np.sort(self.init_data)  # we sort X to get the empirical quantile
+        # 对初始化数据进行排序，以便计算经验分位数
+
         self.init_threshold = S[int(level * n_init)]  # t is fixed for the whole algorithm
 
         # initial peaks
         self.peaks = self.init_data[self.init_data > self.init_threshold] - self.init_threshold
+        # 提取超过初始阈值的数据点，并计算它们与阈值的差值（即峰值）
+    
         self.Nt = self.peaks.size
         # if self.Nt == 0:
         #     self.Nt = 1
@@ -166,6 +211,7 @@ class SPOT:
 
         g, s, l = self.estimator()
         self.extreme_quantile = self._quantile(g, s)
+        #根据估计的参数计算极端分位数（即动态阈值）
 
         if verbose:
             print('[done]')
@@ -176,6 +222,8 @@ class SPOT:
 
         return
 
+    #数值处理函数，作用是寻找一个函数可能的根
+    #jac : 函数的一阶导数； bounds : 给出的搜索根的(min,max)区间；npoints是输出的最大的根的数量
     def _rootsFinder(fun, jac, bounds, npoints, method):
         """
         Find possible roots of a scalar function
@@ -223,6 +271,8 @@ class SPOT:
         np.round(X, decimals=5)
         return np.unique(X)
 
+
+    #计算广义帕累托分布（GPD）的对数似然值（todo
     def _log_likelihood(Y, gamma, sigma):
         """
         Compute the log-likelihood for the Generalized Pareto Distribution (μ=0)
@@ -249,6 +299,7 @@ class SPOT:
             L = n * (1 + log(Y.mean()))
         return L
 
+    #使用 Grimshaw 方法估计 GPD 的参数（todo
     def _grimshaw(self, epsilon=1e-8, n_points=10):
         """
         Compute the GPD parameters estimation with the Grimshaw's trick
@@ -329,6 +380,12 @@ class SPOT:
 
         return gamma_best, sigma_best, ll_best
 
+
+    """
+    使用矩估计法计算GPD参数
+    优点：计算速度快，无需迭代
+    缺点：可能不如MLE准确
+    """
     def _MOM(self):  # Method of Moments
         Yi = self.peaks
         avg = np.mean(Yi)
@@ -337,6 +394,8 @@ class SPOT:
         gamma = 0.5 * (1 - avg**2/var)
         return gamma, sigma, 0
 
+
+    #计算极端阈值
     def _quantile(self, gamma, sigma):
         """
         Compute the quantile at level 1-q
@@ -354,12 +413,16 @@ class SPOT:
             quantile at level 1-q for the GPD(γ,σ,μ=0)
         """
         r = self.n * self.proba / self.Nt
+        # 标准GPD分布
         if gamma != 0:
             return self.init_threshold + (sigma / gamma) * (pow(r, -gamma) - 1)
+        # 当gamma=0时，退化为指数分布
         else:
             return self.init_threshold - sigma * log(r)
             # return self.init_threshold - sigma / gamma
 
+
+    #处理单个新数据点，执行异常检测并更新模型
     def run_step(self, data_point):
         """
         Args:

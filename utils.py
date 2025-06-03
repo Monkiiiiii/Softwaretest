@@ -4,6 +4,13 @@ import matplotlib.pyplot as plt
 import more_itertools as mit
 
 
+"""
+时间序列预处理核心工具：
+complete_timestamp：处理时间戳缺失和不均匀问题，为时序分析奠定基础
+standardize_kpi：标准化数据，适配机器学习模型
+plot_ft：可视化原始数据、异常标签和模型输出，辅助分析检测性能
+
+"""
 def complete_timestamp(timestamp, arrays=None, filled_value="nan"):
     """
     This function is modified from https://github.com/NetManAIOps/donut/blob/master/donut/preprocessing.py

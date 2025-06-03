@@ -9,39 +9,56 @@ import argparse
 import numba
 
 import sys
+# 添加父目录到系统路径，以便导入spot_pipe
 sys.path.append('..')  # import the upper directory of the current file into the search path
+ # 从spot_pipe导入SPOT类
 from spot_pipe import SPOT
+# 导入评估方法中的调整预测函数
 from eval_methods import adjust_predicts
 
 
+#定义辅助函数
+
+#`calc_ewma`: 指数加权移动平均（支持两种计算方式，adjust参数控制）
 def calc_ewma(input_arr, alpha=0.2, adjust=True):
     """
-    Here, we use EWMA as a simple predictor.
+    Here, we use EWMA as a simple predictor.     在此，我们把EWMA当作一种简单的预测器
 
-    Args:
-        input_arr: 1-D input array
-        alpha: smoothing factor, (0, 1]
+    Args:                                        参数：
+        input_arr: 1-D input array               input_arr：一维输入数组
+        alpha: smoothing factor, (0, 1]          alpha：平滑因子，范围为(0, 1]
         adjust:
             (1) When adjust=True(faster), the EW function is calculated using weights w_i=(1-alpha)^i;
+            当adjust=True（速度更快）时，会运用权重w_i =(1 - alpha)^i来计算EW函数；
             (2) When adjust=False, the exponentially weighted function is calculated recursively.
+            当adjust=False时，则通过递归的方式计算指数加权函数。
     Returns:
-        Exponentially Weighted Average Value
+        Exponentially Weighted Average Value     指数加权平均值
     """
     arr_len = len(input_arr)
+
     if adjust:
+        #首先生成一个从arr_len - 1到 0 的幂次数组
         power_arr = np.array(range(len(input_arr)-1, -1, -1))
+        #接着创建一个由1 - alpha组成的数组
         a = np.full(arr_len, 1-alpha)
+        #然后计算权重数组(1 - alpha)^i
         weight_arr = np.power(a, power_arr)
+        #最后按照标准的加权平均公式来计算结果
         ret = np.sum(input_arr * weight_arr) / np.sum(weight_arr)
+
     else:
+        #先初始化一个数组，将第一个元素设为输入数组的首元素
         ret_arr = [input_arr[0]]
+        #按照递归公式S_t = alpha * x_t+(1 - alpha)*S_{t - 1}依次计算后续元素
         for i in range(1, arr_len):
             temp = alpha * input_arr[i] + (1 - alpha) * ret_arr[-1]
             ret_arr.append(temp)
+        #最终返回的是数组的最后一个元素
         ret = ret_arr[-1]
     return ret
 
-
+#`calc_ewma_v2`: 使用numba加速的EWMA计算（非调整方式，循环计算）
 @numba.jit(nopython=True)
 def calc_ewma_v2(input_arr, alpha=0.2):
     arr_len = len(input_arr)
@@ -52,15 +69,26 @@ def calc_ewma_v2(input_arr, alpha=0.2):
     ret = ret_arr[-1]
     return ret
 
-
+#`calc_first_smooth`: 一阶平滑（计算当前窗口标准差与前一个窗口标准差的差值，取非负）
 def calc_first_smooth(input_arr):
     return max(np.nanstd(input_arr) - np.nanstd(input_arr[:-1]), 0)  # if std_diff < 0, return 0
 
-
+#`calc_second_smooth`: 二阶平滑（计算当前窗口最大值与前一个窗口最大值的差值，取非负）
 def calc_second_smooth(input_arr):
     return max(np.nanmax(input_arr) - np.nanmax(input_arr[:-1]), 0)  # if max_diff < 0, return 0
 
 
+"""
+data_arr	一维数据序列，比如一天的温度、CPU 利用率等
+train_len	用来“训练阈值”的数据长度，之前的数据用来学习正常分布
+period	    数据的周期，比如一天是 1440 分钟就填 1440
+smoothing	平滑处理步骤数（1或2）
+s_w	        用于预测的滑动窗口大小
+p_w	        用于周期性平滑的周期数（往前回看多少天）
+half_d_w	用于“处理数据漂移”的窗口一半大小
+q	        SPOT检测的风险系数（越小越敏感）
+estimator	用什么方法估计数据分布，“MOM”更稳，“MLE”更准但对异常敏感
+"""
 def detect(data_arr, train_len, period, smoothing=2,
            s_w=10, p_w=7, half_d_w=2, q=0.001,
            estimator="MOM"):
@@ -81,22 +109,31 @@ def detect(data_arr, train_len, period, smoothing=2,
     Returns:
         alarms: detection results, 0->normal, 1->abnormal.
     """
-    data_len = len(data_arr)
-    spot = SPOT(q, estimator=estimator)  # create detector
 
-    d_w = half_d_w * 2
+
+    data_len = len(data_arr)# 数据总长度
+    spot = SPOT(q, estimator=estimator)  # 创建一个SPOT检测器
+
+    d_w = half_d_w * 2 # d_w 是完整的数据漂移窗口大小（对称的）
 
     # Calculate the start index to extract anomaly features
     fs_idx = s_w * 2  # start index for first smoothing
     fs_lm_idx = fs_idx + d_w  # start index for local max array of first smoothing
     ss_idx = fs_idx + half_d_w + period * (p_w - 1)  # start index for second smoothing
 
+    #原始预测误差（原始数据 - 预测值）
     pred_err = np.full(data_len, np.nan)  # prediction error array (predictor: ewma)
+    #第一次平滑误差
     fs_err = np.full(data_len, np.nan)  # first smoothing error array
+    #第一次平滑误差的局部最大值
     fs_err_lm = np.full(data_len, np.nan)  # local max array for the first smoothing error
+    #第二次平滑误差
     ss_err = np.full(data_len, np.nan)  # second smoothing error array
-
+    
+    #报警结果 & 阈值列表
     th, alarms = [], []
+
+    #模式一：一级平滑
     if smoothing == 1:
         for i in range(s_w, data_len):
             # calculate the predicted value Pi and prediction error Ei
@@ -191,7 +228,7 @@ def read_yahoo_data(path):
 
     return df, file_name, dir_id
 
-
+# 处理yahoo数据集的主函数
 def main_yahoo(args, data_dir):
     ret_file_path = osp.join(data_dir, args.ret_file).format(args.estimator,
                                                              args.s_w, args.p_w,
@@ -241,7 +278,7 @@ def main_yahoo(args, data_dir):
     with open(ret_file_path, "a") as f:
         f.write("Total F1/Recall/Precision score: {}, {}, {}\n".format(f_score, recall, precision))
 
-
+# 处理kpi数据集的主函数
 def main_kpi(args, base_dir, data_path):
     ret_dir = osp.join(base_dir, "results")
     ret_file_path = osp.join(ret_dir, args.ret_file).format(args.estimator,
@@ -295,7 +332,7 @@ def main_kpi(args, base_dir, data_path):
     with open(ret_file_path, "a") as f:
         f.write("Total F1/Recall/Precision score: {}, {}, {}\n".format(f_score, recall, precision))
 
-
+# 主程序入口（解析参数，调用相应主函数）
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Streaming Detection of FluxEV")
     parser.add_argument('--dataset', type=str, default='Yahoo')
